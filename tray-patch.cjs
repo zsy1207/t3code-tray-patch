@@ -13,35 +13,51 @@ try {
 const crypto = require("crypto");
 
 const MAIN = "apps/desktop/dist-electron/main.cjs";
-const MARKER = "[tray-patch v5]";
+const MARKER = "[tray-patch v6]";
 const ANY_MARKER = "[tray-patch";
+
+/** Text for the Settings rows and the tray menu, in the languages the patch supports. */
+const STRINGS = {
+  en: {
+    closeToTray: [
+      "Close to tray",
+      "Closing the window keeps T3 Code running in the notification area. Quit from the tray icon's menu.",
+    ],
+    launchAtLogin: ["Launch at login", "Start T3 Code in the notification area when you sign in to Windows."],
+    show: "Show {name}",
+    quit: "Quit {name}",
+  },
+  zh: {
+    closeToTray: [
+      "关闭窗口时最小化到托盘",
+      "点窗口的关闭按钮时收到系统托盘，T3 Code 继续在后台运行。要退出请用托盘图标的右键菜单。",
+    ],
+    launchAtLogin: ["开机自启", "登录 Windows 后自动启动 T3 Code，直接待在托盘里，不弹出窗口。"],
+    show: "显示 {name}",
+    quit: "退出 {name}",
+  },
+};
 
 /**
  * Runs inside T3 Code's window (via webContents.executeJavaScript). Adds two switches to
  * Settings → General right after "Quit shortcut", built from the markup of T3 Code's own
- * "terminal close confirmation" row so they match the page. Changes go back to the main
- * process as console messages that start with messagePrefix.
+ * "terminal close confirmation" row so they match the page. The text follows the app's
+ * language (<html lang>) and changes with it. Switch changes and the language go back to
+ * the main process as console messages that start with messagePrefix.
  */
-function settingsPage(initialState, messagePrefix) {
+function settingsPage(initialState, messagePrefix, strings) {
   if (window.__t3TrayPatch) {
     window.__t3TrayPatch.setState(initialState);
     return;
   }
   let state = initialState;
   const rows = [
-    {
-      key: "closeToTray",
-      id: "tray-patch-close-to-tray",
-      zh: ["关闭窗口时最小化到托盘", "点窗口的关闭按钮时收到系统托盘，T3 Code 继续在后台运行。要退出请用托盘图标的右键菜单。"],
-      en: ["Close to tray", "Closing the window keeps T3 Code running in the notification area. Quit from the tray icon's menu."],
-    },
-    {
-      key: "launchAtLogin",
-      id: "tray-patch-launch-at-login",
-      zh: ["开机自启", "登录 Windows 后自动启动 T3 Code，直接待在托盘里，不弹出窗口。"],
-      en: ["Launch at login", "Start T3 Code in the notification area when you sign in to Windows."],
-    },
+    { key: "closeToTray", id: "tray-patch-close-to-tray" },
+    { key: "launchAtLogin", id: "tray-patch-launch-at-login" },
   ];
+  const language = () => document.documentElement.lang || navigator.language || "";
+  const text = () => (language().toLowerCase().startsWith("zh") ? strings.zh : strings.en);
+  const send = (message) => console.info(messagePrefix + JSON.stringify(message));
   const paint = (row, on) => {
     const control = row.querySelector('[role="switch"]');
     if (!control) return;
@@ -51,12 +67,16 @@ function settingsPage(initialState, messagePrefix) {
       node.toggleAttribute("data-unchecked", !on);
     }
   };
+  const label = (row, spec) => {
+    const [title, description] = text()[spec.key];
+    const heading = row.querySelector("h3");
+    if (heading) heading.textContent = title;
+    const paragraph = row.querySelector("p");
+    if (paragraph) paragraph.textContent = description;
+    const control = row.querySelector('[role="switch"]');
+    if (control) control.setAttribute("aria-label", title);
+  };
   const build = (template, spec) => {
-    const [title, description] = (document.documentElement.lang || navigator.language || "")
-      .toLowerCase()
-      .startsWith("zh")
-      ? spec.zh
-      : spec.en;
     const row = template.cloneNode(true);
     for (const node of row.querySelectorAll("input")) node.remove();
     for (const node of [row, ...row.querySelectorAll("[id], [for], [aria-labelledby], [aria-describedby]")]) {
@@ -65,20 +85,17 @@ function settingsPage(initialState, messagePrefix) {
     row.id = spec.id;
     const heading = row.querySelector("h3");
     if (heading) {
-      heading.textContent = title;
       for (const slot of heading.parentElement.querySelectorAll(":scope > span")) slot.replaceChildren();
     }
-    const text = row.querySelector("p");
-    if (text) text.textContent = description;
+    label(row, spec);
     const control = row.querySelector('[role="switch"]');
-    control.setAttribute("aria-label", title);
     const toggle = (event) => {
       event.preventDefault();
       event.stopPropagation();
       const next = !state[spec.key];
       state = { ...state, [spec.key]: next };
       paint(row, next);
-      console.info(messagePrefix + JSON.stringify({ [spec.key]: next }));
+      send({ [spec.key]: next });
     };
     control.addEventListener("click", toggle);
     control.addEventListener("keydown", (event) => {
@@ -108,6 +125,13 @@ function settingsPage(initialState, messagePrefix) {
       inject();
     });
   }).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver(() => {
+    for (const spec of rows) {
+      const row = document.getElementById(spec.id);
+      if (row) label(row, spec);
+    }
+    send({ language: language() });
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
   window.__t3TrayPatch = {
     setState(next) {
       state = next;
@@ -117,10 +141,11 @@ function settingsPage(initialState, messagePrefix) {
       }
     },
   };
+  send({ language: language() });
   inject();
 }
 
-const TRAY_SNIPPET = `// [tray-patch v5] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
+const TRAY_SNIPPET = `// [tray-patch v6] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
 const __t3Tray = (() => {
 	if (process.platform !== "win32") return { shouldHide: () => false, attach: () => {}, deferFirstReveal: () => false };
 	const trayFs = require("node:fs");
@@ -135,7 +160,13 @@ const __t3Tray = (() => {
 	let startHidden = process.argv.includes(HIDDEN_ARG);
 	let maximizeOnShow = false;
 	let settings = null;
-	const text = (zh, en) => (electron.app.getLocale().toLowerCase().startsWith("zh") ? zh : en);
+	const STRINGS = ${JSON.stringify(STRINGS)};
+	// Follows T3 Code's own language once the page reports it; the system language until then.
+	let uiLanguage = null;
+	const text = (key) => {
+		const language = (uiLanguage || electron.app.getLocale()).toLowerCase();
+		return (language.startsWith("zh") ? STRINGS.zh : STRINGS.en)[key].replace("{name}", displayName);
+	};
 	const settingsFile = () => trayPath.join(electron.app.getPath("userData"), "tray-patch.json");
 	const readSettings = () => {
 		if (settings === null) {
@@ -192,9 +223,9 @@ const __t3Tray = (() => {
 		window.focus();
 	};
 	const buildMenu = () => electron.Menu.buildFromTemplate([
-		{ label: text(\`显示 \${displayName}\`, \`Show \${displayName}\`), click: show },
+		{ label: text("show"), click: show },
 		{ type: "separator" },
-		{ label: text(\`退出 \${displayName}\`, \`Quit \${displayName}\`), click: () => electron.app.quit() }
+		{ label: text("quit"), click: () => electron.app.quit() }
 	]);
 	const loadIcon = (iconPath) => {
 		const image = electron.nativeImage.createFromPath(iconPath);
@@ -218,7 +249,7 @@ const __t3Tray = (() => {
 				window.maximize();
 			});
 			window.webContents.on("dom-ready", () => {
-				runInPage(window, "(" + SETTINGS_PAGE + ")(" + JSON.stringify(currentState()) + "," + JSON.stringify(SETTINGS_MESSAGE) + ")");
+				runInPage(window, "(" + SETTINGS_PAGE + ")(" + JSON.stringify(currentState()) + "," + JSON.stringify(SETTINGS_MESSAGE) + "," + JSON.stringify(STRINGS) + ")");
 			});
 			window.webContents.on("console-message", (event, _level, legacyMessage) => {
 				const message = typeof legacyMessage === "string" ? legacyMessage : event && event.message;
@@ -227,6 +258,10 @@ const __t3Tray = (() => {
 					const change = JSON.parse(message.slice(SETTINGS_MESSAGE.length));
 					if (typeof change.closeToTray === "boolean") setCloseToTray(change.closeToTray);
 					if (typeof change.launchAtLogin === "boolean") setLaunchAtLogin(change.launchAtLogin);
+					if (typeof change.language === "string" && change.language !== uiLanguage) {
+						uiLanguage = change.language;
+						if (tray !== null) tray.setContextMenu(buildMenu());
+					}
 				} catch {}
 			});
 			if (tray !== null || typeof iconOption.icon !== "string") return;
@@ -399,25 +434,73 @@ function replaceArchive(asarPath, bytes, backup) {
   }
 }
 
-const BUSY =
-  "T3 Code 正在运行，文件被占用。请先从托盘菜单「退出」或按 Ctrl+Q 完全退出 T3 Code，再运行一次。";
+const PATCH_VERSION = MARKER.match(/v\d+/)[0];
 
-function run(args, log = console.log) {
+/** What the script prints, in Chinese on a Chinese system and in English elsewhere. */
+const MESSAGES = {
+  zh: {
+    missing: (file) => `找不到 app.asar：${file}`,
+    unknownVersion: "未知版本",
+    noMain: (v) => `T3 Code ${v}：没找到 ${MAIN}，没有做任何修改。`,
+    notPatched: (v) => `T3 Code ${v} 没有打过托盘补丁，不需要还原。`,
+    unpatchFailed: (v) => `T3 Code ${v}：没能干净地移除补丁，没有做任何修改。重新安装 T3 Code 可以得到原版。`,
+    restoreDryRun: (v) => `T3 Code ${v} 可以还原（--dry-run，未写入）。`,
+    restored: (v) =>
+      `T3 Code ${v} 已还原为原版。如果开过「开机自启」，T3 Code 仍会开机启动，可在任务管理器的「启动应用」里关掉。`,
+    upToDate: (v) => `T3 Code ${v} 已经是最新的托盘补丁，不需要再打。`,
+    mismatch: (v) => `T3 Code ${v} 的代码结构变了，补丁对不上（可能官方已经改了这部分），没有做任何修改。`,
+    dryRun: (v) => `T3 Code ${v} 可以打补丁（--dry-run，未写入）。`,
+    busy: "T3 Code 正在运行，文件被占用。请先从托盘菜单「退出」或按 Ctrl+Q 完全退出 T3 Code，再运行一次。",
+    upgraded: (v) => `T3 Code ${v} 的托盘补丁已升级到 ${PATCH_VERSION}。重新打开 T3 Code 即可生效。`,
+    applied: (v) => `T3 Code ${v} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
+    where: "两个开关在 设置 → 通用，「退出快捷键」下面。",
+  },
+  en: {
+    missing: (file) => `Can't find app.asar: ${file}`,
+    unknownVersion: "(unknown version)",
+    noMain: (v) => `T3 Code ${v}: ${MAIN} not found. Nothing was changed.`,
+    notPatched: (v) => `T3 Code ${v} isn't patched. Nothing to restore.`,
+    unpatchFailed: (v) =>
+      `T3 Code ${v}: couldn't remove the patch cleanly. Nothing was changed. Reinstalling T3 Code gives you the original.`,
+    restoreDryRun: (v) => `T3 Code ${v} can be restored (--dry-run, nothing written).`,
+    restored: (v) =>
+      `T3 Code ${v} is back to the original. If you turned on Launch at login, it still starts when you sign in; turn that off under Startup apps in Task Manager.`,
+    upToDate: (v) => `T3 Code ${v} already has the latest tray patch.`,
+    mismatch: (v) =>
+      `T3 Code ${v} changed the code this patch relies on (the feature may be official now). Nothing was changed.`,
+    dryRun: (v) => `T3 Code ${v} can be patched (--dry-run, nothing written).`,
+    busy: "T3 Code is running and holds the file open. Quit it fully (tray menu → Quit, or Ctrl+Q) and run this again.",
+    upgraded: (v) => `T3 Code ${v}: tray patch updated to ${PATCH_VERSION}. Reopen T3 Code to use it.`,
+    applied: (v) => `T3 Code ${v} is patched. The original is saved as app.asar.bak. Reopen T3 Code to use it.`,
+    where: "The two switches are in Settings → General, below Quit shortcut.",
+  },
+};
+
+function systemLanguage() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale.toLowerCase().startsWith("zh") ? "zh" : "en";
+  } catch {
+    return "en";
+  }
+}
+
+function run(args, log = console.log, language = systemLanguage()) {
+  const say = MESSAGES[language] || MESSAGES.en;
   const asarPath = args[0];
   const restore = args.includes("--restore");
   const dryRun = args.includes("--dry-run");
   if (!asarPath || !fs.existsSync(asarPath)) {
-    log(`找不到 app.asar：${asarPath}`);
+    log(say.missing(asarPath));
     return 1;
   }
   const archive = readArchive(asarPath);
   const pkgEntry = findEntry(archive.header, "package.json");
   const version = pkgEntry
     ? JSON.parse(readEntry(archive, pkgEntry).toString("utf8")).version
-    : "未知版本";
+    : say.unknownVersion;
   const mainEntry = findEntry(archive.header, MAIN);
   if (!mainEntry || mainEntry.unpacked) {
-    log(`T3 Code ${version}：没找到 ${MAIN}，没有做任何修改。`);
+    log(say.noMain(version));
     return 1;
   }
   const source = readEntry(archive, mainEntry).toString("utf8");
@@ -425,55 +508,51 @@ function run(args, log = console.log) {
 
   if (restore) {
     if (!patchedBefore) {
-      log(`T3 Code ${version} 没有打过托盘补丁，不需要还原。`);
+      log(say.notPatched(version));
       return 0;
     }
     const original = unpatchSource(source);
     if (original === null) {
-      log(`T3 Code ${version}：没能干净地移除补丁，没有做任何修改。重新安装 T3 Code 可以得到原版。`);
+      log(say.unpatchFailed(version));
       return 1;
     }
     if (dryRun) {
-      log(`T3 Code ${version} 可以还原（--dry-run，未写入）。`);
+      log(say.restoreDryRun(version));
       return 0;
     }
     const error = replaceArchive(asarPath, writeArchive(archive, MAIN, Buffer.from(original, "utf8")), false);
     if (error) {
-      log(BUSY, `（${error.code || error.message}）`);
+      log(say.busy, `(${error.code || error.message})`);
       return 1;
     }
-    log(`T3 Code ${version} 已还原为原版。如果开过「开机自启」，T3 Code 仍会开机启动，可在任务管理器的「启动应用」里关掉。`);
+    log(say.restored(version));
     return 0;
   }
 
   if (source.includes(MARKER)) {
-    log(`T3 Code ${version} 已经是最新的托盘补丁，不需要再打。`);
+    log(say.upToDate(version));
     return 0;
   }
   const base = patchedBefore ? unpatchSource(source) : source;
   const patched = base === null ? null : patchSource(base);
   if (patched === null) {
-    log(`T3 Code ${version} 的代码结构变了，补丁对不上（可能官方已经改了这部分），没有做任何修改。`);
+    log(say.mismatch(version));
     return 1;
   }
   if (dryRun) {
-    log(`T3 Code ${version} 可以打补丁（--dry-run，未写入）。`);
+    log(say.dryRun(version));
     return 0;
   }
   const error = replaceArchive(asarPath, writeArchive(archive, MAIN, Buffer.from(patched, "utf8")), !patchedBefore);
   if (error) {
-    log(BUSY, `（${error.code || error.message}）`);
+    log(say.busy, `(${error.code || error.message})`);
     return 1;
   }
-  log(
-    patchedBefore
-      ? `T3 Code ${version} 的托盘补丁已升级到 v5。重新打开 T3 Code 即可生效。`
-      : `T3 Code ${version} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
-  );
-  log("两个开关在 设置 → 通用，「退出快捷键」下面。");
+  log(patchedBefore ? say.upgraded(version) : say.applied(version));
+  log(say.where);
   return 0;
 }
 
-module.exports = { TRAY_SNIPPET, settingsPage, patchSource, unpatchSource, readArchive, writeArchive, findEntry, readEntry, run };
+module.exports = { TRAY_SNIPPET, STRINGS, settingsPage, patchSource, unpatchSource, readArchive, writeArchive, findEntry, readEntry, run };
 
 if (require.main === module) process.exitCode = run(process.argv.slice(2));

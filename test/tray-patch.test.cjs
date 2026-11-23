@@ -123,15 +123,15 @@ function makeInstall(main) {
   return asarPath;
 }
 
-function runTool(args) {
+function runTool(args, language = "zh") {
   const lines = [];
-  const code = tool.run(args, (...parts) => lines.push(parts.join(" ")));
+  const code = tool.run(args, (...parts) => lines.push(parts.join(" ")), language);
   return { code, output: lines.join("\n") };
 }
 
 test("patches all three places and reverses cleanly", () => {
   const patched = tool.patchSource(ORIGINAL_MAIN);
-  assert.ok(patched.includes("[tray-patch v5]"));
+  assert.ok(patched.includes("[tray-patch v6]"));
   assert.ok(patched.includes("if (__t3Tray.shouldHide(window)) {"));
   assert.ok(patched.includes("__t3Tray.attach(window, iconOption, environment.displayName);"));
   assert.ok(patched.includes("if (!__t3Tray.deferFirstReveal(persistedSettings.mainWindowMaximized)) {"));
@@ -150,7 +150,7 @@ test("applies to an install, keeps a backup, and leaves other files untouched", 
   const first = runTool([asarPath]);
   assert.equal(first.code, 0, first.output);
   assert.deepEqual(fs.readFileSync(`${asarPath}.bak`), before);
-  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v5]"));
+  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v6]"));
   assert.equal(readFile(asarPath, "zz-last.txt"), "after main\n");
   assert.equal(readFile(asarPath, "package.json"), readFile(`${asarPath}.bak`, "package.json"));
   const unpacked = tool.findEntry(tool.readArchive(asarPath).header, "apps/desktop/prod-resources/resource-monitor/monitor.exe");
@@ -159,6 +159,7 @@ test("applies to an install, keeps a backup, and leaves other files untouched", 
   const again = runTool([asarPath]);
   assert.equal(again.code, 0);
   assert.match(again.output, /已经是最新的托盘补丁/);
+  assert.equal(runTool([asarPath], "en").output, "T3 Code 0.1.11 already has the latest tray patch.");
 });
 
 test("upgrades an install patched by v1 without replacing the original backup", () => {
@@ -166,7 +167,7 @@ test("upgrades an install patched by v1 without replacing the original backup", 
   fs.writeFileSync(`${asarPath}.bak`, "original");
   const result = runTool([asarPath]);
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /升级到 v5/);
+  assert.match(result.output, /升级到 v6/);
   assert.equal(readFile(asarPath, MAIN), tool.patchSource(ORIGINAL_MAIN));
   assert.equal(fs.readFileSync(`${asarPath}.bak`, "utf8"), "original");
 });
@@ -290,6 +291,13 @@ test("tray: hides on close, menu has only Show and Quit, and Quit closes for rea
     "退出 T3 Code (Beta)",
   ]);
 
+  window.webContents.emit("console-message", { message: '__t3_tray_patch__{"language":"en"}' });
+  assert.deepEqual(plain(trays[0].menu.map((item) => item.label ?? item.type)), [
+    "Show T3 Code (Beta)",
+    "separator",
+    "Quit T3 Code (Beta)",
+  ], "the menu follows the language T3 Code's page reports");
+
   trays[0].emit("click");
   assert.equal(window.visible, true, "clicking the icon shows the window");
   window.hide();
@@ -311,7 +319,9 @@ test("settings page: injected on load; its switches change behavior and persist"
   window.webContents.emit("dom-ready");
   const [injected] = window.webContents.scripts;
   assert.ok(injected.startsWith("(function settingsPage("));
-  assert.ok(injected.endsWith(')({"closeToTray":true,"launchAtLogin":false},"__t3_tray_patch__")'));
+  assert.ok(
+    injected.endsWith(')({"closeToTray":true,"launchAtLogin":false},"__t3_tray_patch__",' + JSON.stringify(tool.STRINGS) + ")"),
+  );
 
   fromPage(window, { closeToTray: false });
   assert.equal(tray.shouldHide(window), false);

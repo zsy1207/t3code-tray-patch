@@ -14,6 +14,8 @@
 
 托盘图标单击显示窗口，右键菜单里有「显示」和「退出」。
 
+设置页的两行和托盘菜单支持中文和英文，跟随 T3 Code 里选的界面语言，切换语言后立即生效。打补丁脚本的提示在中文系统上显示中文，其他系统显示英文。
+
 这是非官方补丁，和 T3 Tools 没有关系。官方目前不接受外部功能 PR，所以用补丁的方式先用上。
 
 ## 用法
@@ -31,7 +33,7 @@
 
 T3 Code 默认装在 `%LOCALAPPDATA%\Programs\t3code`。补丁只改 `resources\app.asar` 里的主进程文件 `apps/desktop/dist-electron/main.cjs`，其他文件逐字节保持不变：
 
-- 在 `main.cjs` 开头加入托盘逻辑（标记为 `[tray-patch v5]`）。
+- 在 `main.cjs` 开头加入托盘逻辑（标记为 `[tray-patch v6]`）。
 - 设置页面本身没有改。窗口加载后，补丁往页面里插入两行设置，外观复制自 T3 Code 自己的「终端关闭确认」那一行，切换结果通过一条带固定前缀的控制台消息传回主进程。
 - 主窗口的 `close` 事件里，托盘图标存在且开着“最小化到托盘”时，改成隐藏窗口。退出、更新和 Windows 注销关机时照常关闭。
 - 开机自启用 Electron 的 `app.setLoginItemSettings` 写入当前用户的启动项，带 `--tray-patch-hidden` 参数；带这个参数启动时跳过第一次显示窗口。
@@ -53,6 +55,6 @@ node --test
 
 ## English
 
-An unofficial patch for the Windows build of the T3 Code desktop app. It adds **close to tray** and **launch at login (start in tray)**, as two switches in Settings → General, below "Quit shortcut". The tray icon shows the window on click; its menu has Show and Quit. Quit T3 Code, run `apply-tray-patch.cmd`, and reopen it. Re-run after every T3 Code update; `restore-original.cmd` undoes it. Only `main.cjs` inside `resources\app.asar` changes, and the original is kept as `app.asar.bak`.
+An unofficial patch for the Windows build of the T3 Code desktop app. It adds **close to tray** and **launch at login (start in tray)**, as two switches in Settings → General, below "Quit shortcut". The tray icon shows the window on click; its menu has Show and Quit. The new text follows T3 Code's interface language (Chinese or English for now). Quit T3 Code, run `apply-tray-patch.cmd`, and reopen it. Re-run after every T3 Code update; `restore-original.cmd` undoes it. Only `main.cjs` inside `resources\app.asar` changes, and the original is kept as `app.asar.bak`.
 
 MIT License.
