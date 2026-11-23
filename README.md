@@ -31,7 +31,7 @@
 
 T3 Code 默认装在 `%LOCALAPPDATA%\Programs\t3code`。补丁只改 `resources\app.asar` 里的主进程文件 `apps/desktop/dist-electron/main.cjs`，其他文件逐字节保持不变：
 
-- 在 `main.cjs` 开头加入托盘逻辑（标记为 `[tray-patch v4]`）。
+- 在 `main.cjs` 开头加入托盘逻辑（标记为 `[tray-patch v5]`）。
 - 设置页面本身没有改。窗口加载后，补丁往页面里插入两行设置，外观复制自 T3 Code 自己的「终端关闭确认」那一行，切换结果通过一条带固定前缀的控制台消息传回主进程。
 - 主窗口的 `close` 事件里，托盘图标存在且开着“最小化到托盘”时，改成隐藏窗口。退出、更新和 Windows 注销关机时照常关闭。
 - 开机自启用 Electron 的 `app.setLoginItemSettings` 写入当前用户的启动项，带 `--tray-patch-hidden` 参数；带这个参数启动时跳过第一次显示窗口。

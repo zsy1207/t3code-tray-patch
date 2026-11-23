@@ -13,7 +13,7 @@ try {
 const crypto = require("crypto");
 
 const MAIN = "apps/desktop/dist-electron/main.cjs";
-const MARKER = "[tray-patch v4]";
+const MARKER = "[tray-patch v5]";
 const ANY_MARKER = "[tray-patch";
 
 /**
@@ -98,9 +98,10 @@ function settingsPage(initialState, messagePrefix) {
       after = row;
     }
   };
+  // The desktop app routes by the URL hash, so look for the page's rows instead of the path.
   let scheduled = false;
   new MutationObserver(() => {
-    if (scheduled || !location.pathname.startsWith("/settings")) return;
+    if (scheduled || document.getElementById(rows[0].id) || !document.getElementById("terminal-close-confirmation")) return;
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
@@ -119,7 +120,7 @@ function settingsPage(initialState, messagePrefix) {
   inject();
 }
 
-const TRAY_SNIPPET = `// [tray-patch v4] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
+const TRAY_SNIPPET = `// [tray-patch v5] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
 const __t3Tray = (() => {
 	if (process.platform !== "win32") return { shouldHide: () => false, attach: () => {}, deferFirstReveal: () => false };
 	const trayFs = require("node:fs");
@@ -466,7 +467,7 @@ function run(args, log = console.log) {
   }
   log(
     patchedBefore
-      ? `T3 Code ${version} 的托盘补丁已升级到 v4。重新打开 T3 Code 即可生效。`
+      ? `T3 Code ${version} 的托盘补丁已升级到 v5。重新打开 T3 Code 即可生效。`
       : `T3 Code ${version} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
   );
   log("两个开关在 设置 → 通用，「退出快捷键」下面。");

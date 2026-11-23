@@ -131,7 +131,7 @@ function runTool(args) {
 
 test("patches all three places and reverses cleanly", () => {
   const patched = tool.patchSource(ORIGINAL_MAIN);
-  assert.ok(patched.includes("[tray-patch v4]"));
+  assert.ok(patched.includes("[tray-patch v5]"));
   assert.ok(patched.includes("if (__t3Tray.shouldHide(window)) {"));
   assert.ok(patched.includes("__t3Tray.attach(window, iconOption, environment.displayName);"));
   assert.ok(patched.includes("if (!__t3Tray.deferFirstReveal(persistedSettings.mainWindowMaximized)) {"));
@@ -150,7 +150,7 @@ test("applies to an install, keeps a backup, and leaves other files untouched", 
   const first = runTool([asarPath]);
   assert.equal(first.code, 0, first.output);
   assert.deepEqual(fs.readFileSync(`${asarPath}.bak`), before);
-  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v4]"));
+  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v5]"));
   assert.equal(readFile(asarPath, "zz-last.txt"), "after main\n");
   assert.equal(readFile(asarPath, "package.json"), readFile(`${asarPath}.bak`, "package.json"));
   const unpacked = tool.findEntry(tool.readArchive(asarPath).header, "apps/desktop/prod-resources/resource-monitor/monitor.exe");
@@ -166,7 +166,7 @@ test("upgrades an install patched by v1 without replacing the original backup", 
   fs.writeFileSync(`${asarPath}.bak`, "original");
   const result = runTool([asarPath]);
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /升级到 v4/);
+  assert.match(result.output, /升级到 v5/);
   assert.equal(readFile(asarPath, MAIN), tool.patchSource(ORIGINAL_MAIN));
   assert.equal(fs.readFileSync(`${asarPath}.bak`, "utf8"), "original");
 });
