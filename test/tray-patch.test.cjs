@@ -131,7 +131,7 @@ function runTool(args) {
 
 test("patches all three places and reverses cleanly", () => {
   const patched = tool.patchSource(ORIGINAL_MAIN);
-  assert.ok(patched.includes("[tray-patch v3]"));
+  assert.ok(patched.includes("[tray-patch v4]"));
   assert.ok(patched.includes("if (__t3Tray.shouldHide(window)) {"));
   assert.ok(patched.includes("__t3Tray.attach(window, iconOption, environment.displayName);"));
   assert.ok(patched.includes("if (!__t3Tray.deferFirstReveal(persistedSettings.mainWindowMaximized)) {"));
@@ -150,7 +150,7 @@ test("applies to an install, keeps a backup, and leaves other files untouched", 
   const first = runTool([asarPath]);
   assert.equal(first.code, 0, first.output);
   assert.deepEqual(fs.readFileSync(`${asarPath}.bak`), before);
-  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v3]"));
+  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v4]"));
   assert.equal(readFile(asarPath, "zz-last.txt"), "after main\n");
   assert.equal(readFile(asarPath, "package.json"), readFile(`${asarPath}.bak`, "package.json"));
   const unpacked = tool.findEntry(tool.readArchive(asarPath).header, "apps/desktop/prod-resources/resource-monitor/monitor.exe");
@@ -166,7 +166,7 @@ test("upgrades an install patched by v1 without replacing the original backup", 
   fs.writeFileSync(`${asarPath}.bak`, "original");
   const result = runTool([asarPath]);
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /升级到 v3/);
+  assert.match(result.output, /升级到 v4/);
   assert.equal(readFile(asarPath, MAIN), tool.patchSource(ORIGINAL_MAIN));
   assert.equal(fs.readFileSync(`${asarPath}.bak`, "utf8"), "original");
 });
@@ -201,7 +201,11 @@ function loadTray({ argv = [], locale = "zh-CN", userData }) {
   app.getPath = (name) => (name === "userData" ? userData : os.tmpdir());
   app.loginItems = [];
   app.setLoginItemSettings = (settings) => app.loginItems.push(settings);
-  app.getLoginItemSettings = () => ({ openAtLogin: false, executableWillLaunchAtLogin: false });
+  app.getLoginItemSettings = () => {
+    const last = app.loginItems.at(-1);
+    const on = last ? last.openAtLogin : false;
+    return { openAtLogin: on, executableWillLaunchAtLogin: on };
+  };
   app.quit = () => app.emit("before-quit");
   const trays = [];
   class Tray extends EventEmitter {
@@ -209,14 +213,13 @@ function loadTray({ argv = [], locale = "zh-CN", userData }) {
       super();
       this.image = image;
       this.destroyed = false;
-      this.menus = [];
       trays.push(this);
     }
     setToolTip(tip) {
       this.tip = tip;
     }
-    popUpContextMenu(menu) {
-      this.menus.push(menu);
+    setContextMenu(menu) {
+      this.menu = menu;
     }
     isDestroyed() {
       return this.destroyed;
@@ -267,12 +270,10 @@ class FakeWindow extends EventEmitter {
   }
 }
 
-const menuItem = (trayIcon, label) => {
-  trayIcon.emit("right-click");
-  return trayIcon.menus.at(-1).find((item) => item.label === label);
-};
+const fromPage = (window, change) =>
+  window.webContents.emit("console-message", { message: "__t3_tray_patch__" + JSON.stringify(change) });
 
-test("tray: hides on close, toggles close-to-tray, and quits for real", () => {
+test("tray: hides on close, menu has only Show and Quit, and Quit closes for real", () => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tray-user-"));
   const { tray, app, trays } = loadTray({ userData });
   const window = new FakeWindow();
@@ -282,51 +283,61 @@ test("tray: hides on close, toggles close-to-tray, and quits for real", () => {
 
   tray.attach(window, { icon: "C:/T3/icon.ico" }, "T3 Code (Beta)");
   assert.equal(trays.length, 1);
-  assert.equal(tray.shouldHide(window), true);
-
-  trays[0].emit("click");
-  assert.equal(window.visible, true, "clicking the icon shows the window");
-
-  const labels = (trays[0].emit("right-click"), trays[0].menus.at(-1).map((item) => item.label ?? item.type));
-  assert.deepEqual(plain(labels), [
+  assert.equal(tray.shouldHide(window), true, "close to tray is on by default");
+  assert.deepEqual(plain(trays[0].menu.map((item) => item.label ?? item.type)), [
     "显示 T3 Code (Beta)",
-    "separator",
-    "关闭窗口时最小化到托盘",
-    "开机自启（启动后留在托盘）",
     "separator",
     "退出 T3 Code (Beta)",
   ]);
 
-  const closeToTray = menuItem(trays[0], "关闭窗口时最小化到托盘");
-  assert.equal(closeToTray.checked, true);
-  closeToTray.click({ checked: false });
-  assert.equal(tray.shouldHide(window), false);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, "tray-patch.json"), "utf8")), {
-    closeToTray: false,
-  });
+  trays[0].emit("click");
+  assert.equal(window.visible, true, "clicking the icon shows the window");
+  window.hide();
+  trays[0].menu[0].click();
+  assert.equal(window.visible, true, "Show shows the window");
 
-  const reloaded = loadTray({ userData });
-  const otherWindow = new FakeWindow();
-  reloaded.tray.attach(otherWindow, { icon: "C:/T3/icon.ico" }, "T3 Code");
-  assert.equal(reloaded.tray.shouldHide(otherWindow), false, "the choice survives a restart");
-
-  closeToTray.click({ checked: true });
-  menuItem(trays[0], "退出 T3 Code (Beta)").click();
+  trays[0].menu[2].click();
   assert.equal(tray.shouldHide(window), false, "closing after Quit really closes");
   app.emit("will-quit");
   assert.equal(trays[0].isDestroyed(), true);
 });
 
-test("tray: launch at login registers a hidden start that shows maximized later", () => {
+test("settings page: injected on load; its switches change behavior and persist", () => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tray-user-"));
-  const normal = loadTray({ userData, locale: "en-US" });
+  const { tray, app } = loadTray({ userData });
+  const window = new FakeWindow();
+  tray.attach(window, { icon: "C:/T3/icon.ico" }, "T3 Code");
+
+  window.webContents.emit("dom-ready");
+  const [injected] = window.webContents.scripts;
+  assert.ok(injected.startsWith("(function settingsPage("));
+  assert.ok(injected.endsWith(')({"closeToTray":true,"launchAtLogin":false},"__t3_tray_patch__")'));
+
+  fromPage(window, { closeToTray: false });
+  assert.equal(tray.shouldHide(window), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, "tray-patch.json"), "utf8")), {
+    closeToTray: false,
+  });
+  window.webContents.emit("console-message", {}, 1, "__t3_tray_patch__" + JSON.stringify({ launchAtLogin: true }));
+  assert.deepEqual(plain(app.loginItems), [{ args: ["--tray-patch-hidden"], openAtLogin: true }]);
+  assert.match(window.webContents.scripts.at(-1), /setState\(\{"closeToTray":false,"launchAtLogin":true\}\)/, "the page shows the saved state");
+
+  fromPage(window, { closeToTray: "yes" });
+  window.webContents.emit("console-message", { message: "unrelated log line" });
+  assert.equal(tray.shouldHide(window), false, "ignores malformed and unrelated messages");
+
+  const reloaded = loadTray({ userData });
+  const otherWindow = new FakeWindow();
+  reloaded.tray.attach(otherWindow, { icon: "C:/T3/icon.ico" }, "T3 Code");
+  assert.equal(reloaded.tray.shouldHide(otherWindow), false, "the choice survives a restart");
+});
+
+test("launch at login: a hidden start skips the first reveal and restores maximized later", () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tray-user-"));
+  const normal = loadTray({ userData });
   const normalWindow = new FakeWindow();
   normal.tray.attach(normalWindow, { icon: "C:/T3/icon.ico" }, "T3 Code");
   assert.equal(normal.tray.deferFirstReveal(true), false, "a normal launch shows the window");
-  const login = menuItem(normal.trays[0], "Launch at login (start in tray)");
-  assert.equal(login.checked, false);
-  login.click({ checked: true });
-  assert.deepEqual(plain(normal.app.loginItems), [{ args: ["--tray-patch-hidden"], openAtLogin: true }]);
 
   const atLogin = loadTray({ userData, argv: ["T3 Code.exe", "--tray-patch-hidden"] });
   const window = new FakeWindow();
@@ -338,32 +349,4 @@ test("tray: launch at login registers a hidden start that shows maximized later"
   atLogin.trays[0].emit("click");
   assert.equal(window.visible, true);
   assert.equal(window.maximized, true, "restores the saved maximized state");
-});
-
-test("settings page: injects on load and applies switch changes from the page", () => {
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tray-user-"));
-  const { tray, app, trays } = loadTray({ userData });
-  const window = new FakeWindow();
-  tray.attach(window, { icon: "C:/T3/icon.ico" }, "T3 Code");
-
-  window.webContents.emit("dom-ready");
-  const [injected] = window.webContents.scripts;
-  assert.ok(injected.startsWith("(function settingsPage("));
-  assert.ok(injected.endsWith(')({"closeToTray":true,"launchAtLogin":false},"__t3_tray_patch__")'));
-
-  const fromPage = (change) => ({ message: "__t3_tray_patch__" + JSON.stringify(change) });
-  window.webContents.emit("console-message", fromPage({ closeToTray: false }));
-  assert.equal(tray.shouldHide(window), false);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, "tray-patch.json"), "utf8")), {
-    closeToTray: false,
-  });
-  window.webContents.emit("console-message", {}, 1, "__t3_tray_patch__" + JSON.stringify({ launchAtLogin: true }));
-  assert.deepEqual(plain(app.loginItems), [{ args: ["--tray-patch-hidden"], openAtLogin: true }]);
-  window.webContents.emit("console-message", fromPage({ closeToTray: "yes" }));
-  window.webContents.emit("console-message", { message: "unrelated log line" });
-  assert.equal(tray.shouldHide(window), false, "ignores malformed and unrelated messages");
-
-  menuItem(trays[0], "关闭窗口时最小化到托盘").click({ checked: true });
-  assert.equal(tray.shouldHide(window), true);
-  assert.match(window.webContents.scripts.at(-1), /setState\(\{"closeToTray":true,/, "tray changes reach the page");
 });

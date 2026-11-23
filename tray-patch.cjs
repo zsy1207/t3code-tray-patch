@@ -13,7 +13,7 @@ try {
 const crypto = require("crypto");
 
 const MAIN = "apps/desktop/dist-electron/main.cjs";
-const MARKER = "[tray-patch v3]";
+const MARKER = "[tray-patch v4]";
 const ANY_MARKER = "[tray-patch";
 
 /**
@@ -119,7 +119,7 @@ function settingsPage(initialState, messagePrefix) {
   inject();
 }
 
-const TRAY_SNIPPET = `// [tray-patch v3] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
+const TRAY_SNIPPET = `// [tray-patch v4] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
 const __t3Tray = (() => {
 	if (process.platform !== "win32") return { shouldHide: () => false, attach: () => {}, deferFirstReveal: () => false };
 	const trayFs = require("node:fs");
@@ -193,19 +193,6 @@ const __t3Tray = (() => {
 	const buildMenu = () => electron.Menu.buildFromTemplate([
 		{ label: text(\`显示 \${displayName}\`, \`Show \${displayName}\`), click: show },
 		{ type: "separator" },
-		{
-			label: text("关闭窗口时最小化到托盘", "Close to tray"),
-			type: "checkbox",
-			checked: readSettings().closeToTray,
-			click: (item) => setCloseToTray(item.checked)
-		},
-		{
-			label: text("开机自启（启动后留在托盘）", "Launch at login (start in tray)"),
-			type: "checkbox",
-			checked: launchesAtLogin(),
-			click: (item) => setLaunchAtLogin(item.checked)
-		},
-		{ type: "separator" },
 		{ label: text(\`退出 \${displayName}\`, \`Quit \${displayName}\`), click: () => electron.app.quit() }
 	]);
 	const loadIcon = (iconPath) => {
@@ -245,8 +232,8 @@ const __t3Tray = (() => {
 			try {
 				tray = new electron.Tray(loadIcon(iconOption.icon));
 				tray.setToolTip(displayName);
+				tray.setContextMenu(buildMenu());
 				tray.on("click", show);
-				tray.on("right-click", () => tray.popUpContextMenu(buildMenu()));
 			} catch (error) {
 				tray = null;
 				console.error("[tray-patch] could not create the tray icon", error);
@@ -479,10 +466,10 @@ function run(args, log = console.log) {
   }
   log(
     patchedBefore
-      ? `T3 Code ${version} 的托盘补丁已升级到 v3。重新打开 T3 Code 即可生效。`
+      ? `T3 Code ${version} 的托盘补丁已升级到 v4。重新打开 T3 Code 即可生效。`
       : `T3 Code ${version} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
   );
-  log("两个开关在 设置 → 常规（「退出快捷键」下面），托盘图标的右键菜单里也有。");
+  log("两个开关在 设置 → 常规，「退出快捷键」下面。");
   return 0;
 }
 
