@@ -1,0 +1,9 @@
+{
+  "name": "t3code-tray-patch",
+  "private": true,
+  "description": "Close to tray and launch at login for the T3 Code desktop app on Windows.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

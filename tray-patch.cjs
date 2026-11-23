@@ -1,0 +1,364 @@
+// Adds "close to tray" and "launch at login" to an installed T3 Code on Windows by editing
+// apps/desktop/dist-electron/main.cjs inside resources\app.asar. Every other file in the
+// archive keeps its exact bytes. Run it through apply-tray-patch.cmd or restore-original.cmd,
+// which use T3 Code's own executable as Node (ELECTRON_RUN_AS_NODE=1).
+"use strict";
+process.noAsar = true;
+let fs;
+try {
+  fs = require("original-fs");
+} catch {
+  fs = require("fs");
+}
+const crypto = require("crypto");
+
+const MAIN = "apps/desktop/dist-electron/main.cjs";
+const MARKER = "[tray-patch v2]";
+const ANY_MARKER = "[tray-patch";
+
+const TRAY_SNIPPET = `// [tray-patch v2] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
+const __t3Tray = (() => {
+	if (process.platform !== "win32") return { shouldHide: () => false, attach: () => {}, deferFirstReveal: () => false };
+	const trayFs = require("node:fs");
+	const trayPath = require("node:path");
+	const HIDDEN_ARG = "--tray-patch-hidden";
+	const loginItem = { args: [HIDDEN_ARG] };
+	let tray = null;
+	let mainWindow = null;
+	let displayName = "T3 Code";
+	let quitting = false;
+	let sessionEnding = false;
+	let startHidden = process.argv.includes(HIDDEN_ARG);
+	let maximizeOnShow = false;
+	let settings = null;
+	const text = (zh, en) => (electron.app.getLocale().toLowerCase().startsWith("zh") ? zh : en);
+	const settingsFile = () => trayPath.join(electron.app.getPath("userData"), "tray-patch.json");
+	const readSettings = () => {
+		if (settings === null) {
+			settings = { closeToTray: true };
+			try {
+				Object.assign(settings, JSON.parse(trayFs.readFileSync(settingsFile(), "utf8")));
+			} catch {}
+		}
+		return settings;
+	};
+	const writeSettings = () => {
+		try {
+			trayFs.writeFileSync(settingsFile(), JSON.stringify(settings, null, 2));
+		} catch (error) {
+			console.error("[tray-patch] could not save settings", error);
+		}
+	};
+	const launchesAtLogin = () => {
+		const state = electron.app.getLoginItemSettings(loginItem);
+		return state.executableWillLaunchAtLogin ?? state.openAtLogin;
+	};
+	electron.app.on("before-quit", () => {
+		quitting = true;
+	});
+	electron.app.on("will-quit", () => {
+		if (tray !== null && !tray.isDestroyed()) tray.destroy();
+		tray = null;
+	});
+	const show = () => {
+		const window = mainWindow;
+		if (window === null || window.isDestroyed()) {
+			electron.app.emit("activate");
+			return;
+		}
+		if (window.isMinimized()) window.restore();
+		window.show();
+		window.focus();
+	};
+	const buildMenu = () => electron.Menu.buildFromTemplate([
+		{ label: text(\`显示 \${displayName}\`, \`Show \${displayName}\`), click: show },
+		{ type: "separator" },
+		{
+			label: text("关闭窗口时最小化到托盘", "Close to tray"),
+			type: "checkbox",
+			checked: readSettings().closeToTray,
+			click: (item) => {
+				readSettings().closeToTray = item.checked;
+				writeSettings();
+			}
+		},
+		{
+			label: text("开机自启（启动后留在托盘）", "Launch at login (start in tray)"),
+			type: "checkbox",
+			checked: launchesAtLogin(),
+			click: (item) => {
+				electron.app.setLoginItemSettings({ ...loginItem, openAtLogin: item.checked });
+			}
+		},
+		{ type: "separator" },
+		{ label: text(\`退出 \${displayName}\`, \`Quit \${displayName}\`), click: () => electron.app.quit() }
+	]);
+	const loadIcon = (iconPath) => {
+		const image = electron.nativeImage.createFromPath(iconPath);
+		if (!image.isEmpty()) return image;
+		// Win32 icon loading cannot read inside app.asar; copy the icon out once.
+		const copied = trayPath.join(electron.app.getPath("temp"), "t3code-tray.ico");
+		trayFs.writeFileSync(copied, trayFs.readFileSync(iconPath));
+		return electron.nativeImage.createFromPath(copied);
+	};
+	return {
+		shouldHide: (window) => tray !== null && readSettings().closeToTray && !quitting && !sessionEnding && !window.isDestroyed(),
+		attach: (window, iconOption, name) => {
+			mainWindow = window;
+			displayName = name;
+			window.on("session-end", () => {
+				sessionEnding = true;
+			});
+			window.once("show", () => {
+				if (!maximizeOnShow) return;
+				maximizeOnShow = false;
+				window.maximize();
+			});
+			if (tray !== null || typeof iconOption.icon !== "string") return;
+			try {
+				tray = new electron.Tray(loadIcon(iconOption.icon));
+				tray.setToolTip(displayName);
+				tray.on("click", show);
+				tray.on("right-click", () => tray.popUpContextMenu(buildMenu()));
+			} catch (error) {
+				tray = null;
+				console.error("[tray-patch] could not create the tray icon", error);
+			}
+		},
+		deferFirstReveal: (maximized) => {
+			if (!startHidden || tray === null) return false;
+			startHidden = false;
+			maximizeOnShow = maximized;
+			return true;
+		}
+	};
+})();
+`;
+
+const IMPORT_ANCHOR = "electron = __toESM(electron, 1);\n";
+const ICON_ANCHOR = "const iconOption = getIconOption(";
+const CLOSE_ORIGINAL =
+  /\n(\t+)window\.on\("close", \(\) => \{\n\t+runFork\(flushBoundsPersist\);\n\t+\}\);\n/g;
+const CLOSE_PATCHED =
+  /\n(\t+)window\.on\("close", \(event\) => \{\n\t+runFork\(flushBoundsPersist\);\n\t+if \(__t3Tray\.shouldHide\(window\)\) \{\n\t+event\.preventDefault\(\);\n\t+window\.hide\(\);\n\t+\}\n\t+\}\);\n\t+__t3Tray\.attach\(window, iconOption, environment\.displayName\);\n/g;
+const REVEAL_ORIGINAL =
+  /\n(\t+)if \(persistedSettings\.mainWindowMaximized\) window\.maximize\(\);\n\t+yield\* electronWindow\.reveal\(window\);\n/g;
+const REVEAL_PATCHED =
+  /\n(\t+)if \(!__t3Tray\.deferFirstReveal\(persistedSettings\.mainWindowMaximized\)\) \{\n\t+if \(persistedSettings\.mainWindowMaximized\) window\.maximize\(\);\n\t+yield\* electronWindow\.reveal\(window\);\n\t+\}\n/g;
+const SNIPPET_BLOCK = /\/\/ \[tray-patch[^\n]*\n[\s\S]*?\n\}\)\(\);\n/;
+
+const count = (source, pattern) =>
+  typeof pattern === "string" ? source.split(pattern).length - 1 : (source.match(pattern) || []).length;
+
+/** Returns the patched source, or null when this T3 Code build does not have the expected code. */
+function patchSource(source) {
+  if (
+    count(source, IMPORT_ANCHOR) !== 1 ||
+    count(source, ICON_ANCHOR) !== 1 ||
+    count(source, CLOSE_ORIGINAL) !== 1 ||
+    count(source, REVEAL_ORIGINAL) !== 1
+  ) {
+    return null;
+  }
+  return source
+    .replace(IMPORT_ANCHOR, IMPORT_ANCHOR + TRAY_SNIPPET)
+    .replace(CLOSE_ORIGINAL, (_match, indent) =>
+      [
+        "",
+        `${indent}window.on("close", (event) => {`,
+        `${indent}\trunFork(flushBoundsPersist);`,
+        `${indent}\tif (__t3Tray.shouldHide(window)) {`,
+        `${indent}\t\tevent.preventDefault();`,
+        `${indent}\t\twindow.hide();`,
+        `${indent}\t}`,
+        `${indent}});`,
+        `${indent}__t3Tray.attach(window, iconOption, environment.displayName);`,
+        "",
+      ].join("\n"),
+    )
+    .replace(REVEAL_ORIGINAL, (_match, indent) =>
+      [
+        "",
+        `${indent}if (!__t3Tray.deferFirstReveal(persistedSettings.mainWindowMaximized)) {`,
+        `${indent}\tif (persistedSettings.mainWindowMaximized) window.maximize();`,
+        `${indent}\tyield* electronWindow.reveal(window);`,
+        `${indent}}`,
+        "",
+      ].join("\n"),
+    );
+}
+
+/** Undoes any version of this patch; returns null when the result is not clean. */
+function unpatchSource(source) {
+  const restored = source
+    .replace(SNIPPET_BLOCK, "")
+    .replace(
+      CLOSE_PATCHED,
+      (_match, indent) =>
+        `\n${indent}window.on("close", () => {\n${indent}\trunFork(flushBoundsPersist);\n${indent}});\n`,
+    )
+    .replace(
+      REVEAL_PATCHED,
+      (_match, indent) =>
+        `\n${indent}if (persistedSettings.mainWindowMaximized) window.maximize();\n${indent}yield* electronWindow.reveal(window);\n`,
+    );
+  return restored.includes("__t3Tray") || restored.includes(ANY_MARKER) ? null : restored;
+}
+
+function readArchive(file) {
+  const buf = fs.readFileSync(file);
+  const headerSize = buf.readUInt32LE(4);
+  const jsonLen = buf.readUInt32LE(12);
+  const header = JSON.parse(buf.subarray(16, 16 + jsonLen).toString("utf8"));
+  return { buf, header, base: 8 + headerSize };
+}
+
+function findEntry(header, inner) {
+  let node = header;
+  for (const part of inner.split("/")) {
+    node = node && node.files ? node.files[part] : undefined;
+  }
+  return node;
+}
+
+function readEntry(archive, entry) {
+  const start = archive.base + Number(entry.offset);
+  return archive.buf.subarray(start, start + entry.size);
+}
+
+/** Rewrites the archive with one file replaced; every other file keeps its bytes and order. */
+function writeArchive(archive, inner, data) {
+  const entries = [];
+  (function walk(node, prefix) {
+    for (const [name, entry] of Object.entries(node.files)) {
+      const filePath = prefix ? `${prefix}/${name}` : name;
+      if (entry.files) walk(entry, filePath);
+      else if (!entry.unpacked && !entry.link) entries.push([filePath, entry]);
+    }
+  })(archive.header, "");
+  entries.sort((a, b) => Number(a[1].offset) - Number(b[1].offset));
+  const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+  const chunks = [];
+  let offset = 0;
+  for (const [filePath, entry] of entries) {
+    let bytes = readEntry(archive, entry);
+    if (filePath === inner) {
+      bytes = data;
+      entry.size = bytes.length;
+      if (entry.integrity) {
+        const blockSize = entry.integrity.blockSize;
+        const blocks = [];
+        for (let i = 0; i < bytes.length; i += blockSize) {
+          blocks.push(sha(bytes.subarray(i, i + blockSize)));
+        }
+        entry.integrity = { ...entry.integrity, hash: sha(bytes), blocks };
+      }
+    }
+    entry.offset = String(offset);
+    offset += bytes.length;
+    chunks.push(bytes);
+  }
+  const json = Buffer.from(JSON.stringify(archive.header), "utf8");
+  const padded = (json.length + 3) & ~3;
+  const headerPickle = Buffer.alloc(8 + padded);
+  headerPickle.writeUInt32LE(4 + padded, 0);
+  headerPickle.writeUInt32LE(json.length, 4);
+  json.copy(headerPickle, 8);
+  const sizePickle = Buffer.alloc(8);
+  sizePickle.writeUInt32LE(4, 0);
+  sizePickle.writeUInt32LE(headerPickle.length, 4);
+  return Buffer.concat([sizePickle, headerPickle, ...chunks]);
+}
+
+/** Writes next to the archive, then swaps it in; refuses while T3 Code holds the file open. */
+function replaceArchive(asarPath, bytes, backup) {
+  const next = `${asarPath}.new`;
+  fs.writeFileSync(next, bytes);
+  try {
+    if (backup) fs.renameSync(asarPath, `${asarPath}.bak`);
+    fs.renameSync(next, asarPath);
+    return null;
+  } catch (error) {
+    if (fs.existsSync(next)) fs.unlinkSync(next);
+    return error;
+  }
+}
+
+const BUSY =
+  "T3 Code 正在运行，文件被占用。请先从托盘菜单「退出」或按 Ctrl+Q 完全退出 T3 Code，再运行一次。";
+
+function run(args, log = console.log) {
+  const asarPath = args[0];
+  const restore = args.includes("--restore");
+  const dryRun = args.includes("--dry-run");
+  if (!asarPath || !fs.existsSync(asarPath)) {
+    log(`找不到 app.asar：${asarPath}`);
+    return 1;
+  }
+  const archive = readArchive(asarPath);
+  const pkgEntry = findEntry(archive.header, "package.json");
+  const version = pkgEntry
+    ? JSON.parse(readEntry(archive, pkgEntry).toString("utf8")).version
+    : "未知版本";
+  const mainEntry = findEntry(archive.header, MAIN);
+  if (!mainEntry || mainEntry.unpacked) {
+    log(`T3 Code ${version}：没找到 ${MAIN}，没有做任何修改。`);
+    return 1;
+  }
+  const source = readEntry(archive, mainEntry).toString("utf8");
+  const patchedBefore = source.includes(ANY_MARKER);
+
+  if (restore) {
+    if (!patchedBefore) {
+      log(`T3 Code ${version} 没有打过托盘补丁，不需要还原。`);
+      return 0;
+    }
+    const original = unpatchSource(source);
+    if (original === null) {
+      log(`T3 Code ${version}：没能干净地移除补丁，没有做任何修改。重新安装 T3 Code 可以得到原版。`);
+      return 1;
+    }
+    if (dryRun) {
+      log(`T3 Code ${version} 可以还原（--dry-run，未写入）。`);
+      return 0;
+    }
+    const error = replaceArchive(asarPath, writeArchive(archive, MAIN, Buffer.from(original, "utf8")), false);
+    if (error) {
+      log(BUSY, `（${error.code || error.message}）`);
+      return 1;
+    }
+    log(`T3 Code ${version} 已还原为原版。如果开过「开机自启」，T3 Code 仍会开机启动，可在任务管理器的「启动应用」里关掉。`);
+    return 0;
+  }
+
+  if (source.includes(MARKER)) {
+    log(`T3 Code ${version} 已经是最新的托盘补丁，不需要再打。`);
+    return 0;
+  }
+  const base = patchedBefore ? unpatchSource(source) : source;
+  const patched = base === null ? null : patchSource(base);
+  if (patched === null) {
+    log(`T3 Code ${version} 的代码结构变了，补丁对不上（可能官方已经改了这部分），没有做任何修改。`);
+    return 1;
+  }
+  if (dryRun) {
+    log(`T3 Code ${version} 可以打补丁（--dry-run，未写入）。`);
+    return 0;
+  }
+  const error = replaceArchive(asarPath, writeArchive(archive, MAIN, Buffer.from(patched, "utf8")), !patchedBefore);
+  if (error) {
+    log(BUSY, `（${error.code || error.message}）`);
+    return 1;
+  }
+  log(
+    patchedBefore
+      ? `T3 Code ${version} 的托盘补丁已升级到 v2。重新打开 T3 Code 即可生效。`
+      : `T3 Code ${version} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
+  );
+  log("右键托盘图标可以开关「关闭窗口时最小化到托盘」和「开机自启」。");
+  return 0;
+}
+
+module.exports = { TRAY_SNIPPET, patchSource, unpatchSource, readArchive, writeArchive, findEntry, readEntry, run };
+
+if (require.main === module) process.exitCode = run(process.argv.slice(2));
