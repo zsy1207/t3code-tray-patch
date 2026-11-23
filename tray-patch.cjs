@@ -469,7 +469,7 @@ function run(args, log = console.log) {
       ? `T3 Code ${version} 的托盘补丁已升级到 v4。重新打开 T3 Code 即可生效。`
       : `T3 Code ${version} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
   );
-  log("两个开关在 设置 → 常规，「退出快捷键」下面。");
+  log("两个开关在 设置 → 通用，「退出快捷键」下面。");
   return 0;
 }
 
