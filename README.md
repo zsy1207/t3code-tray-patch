@@ -58,3 +58,7 @@ node --test
 An unofficial patch for the Windows build of the T3 Code desktop app. It adds **close to tray** and **launch at login (start in tray)**, as two switches in Settings → General, below "Quit shortcut". The tray icon shows the window on click; its menu has Show and Quit. The new text follows T3 Code's interface language (Chinese or English for now). Quit T3 Code, run `apply-tray-patch.cmd`, and reopen it. Re-run after every T3 Code update; `restore-original.cmd` undoes it. Only `main.cjs` inside `resources\app.asar` changes, and the original is kept as `app.asar.bak`.
 
 MIT License.
+
+## 友情链接
+
+- [LINUX DO](https://linux.do)：新的理想型社区
