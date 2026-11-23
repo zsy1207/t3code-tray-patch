@@ -13,10 +13,113 @@ try {
 const crypto = require("crypto");
 
 const MAIN = "apps/desktop/dist-electron/main.cjs";
-const MARKER = "[tray-patch v2]";
+const MARKER = "[tray-patch v3]";
 const ANY_MARKER = "[tray-patch";
 
-const TRAY_SNIPPET = `// [tray-patch v2] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
+/**
+ * Runs inside T3 Code's window (via webContents.executeJavaScript). Adds two switches to
+ * Settings → General right after "Quit shortcut", built from the markup of T3 Code's own
+ * "terminal close confirmation" row so they match the page. Changes go back to the main
+ * process as console messages that start with messagePrefix.
+ */
+function settingsPage(initialState, messagePrefix) {
+  if (window.__t3TrayPatch) {
+    window.__t3TrayPatch.setState(initialState);
+    return;
+  }
+  let state = initialState;
+  const rows = [
+    {
+      key: "closeToTray",
+      id: "tray-patch-close-to-tray",
+      zh: ["关闭窗口时最小化到托盘", "点窗口的关闭按钮时收到系统托盘，T3 Code 继续在后台运行。要退出请用托盘图标的右键菜单。"],
+      en: ["Close to tray", "Closing the window keeps T3 Code running in the notification area. Quit from the tray icon's menu."],
+    },
+    {
+      key: "launchAtLogin",
+      id: "tray-patch-launch-at-login",
+      zh: ["开机自启", "登录 Windows 后自动启动 T3 Code，直接待在托盘里，不弹出窗口。"],
+      en: ["Launch at login", "Start T3 Code in the notification area when you sign in to Windows."],
+    },
+  ];
+  const paint = (row, on) => {
+    const control = row.querySelector('[role="switch"]');
+    if (!control) return;
+    control.setAttribute("aria-checked", on ? "true" : "false");
+    for (const node of [control, ...control.querySelectorAll("*")]) {
+      node.toggleAttribute("data-checked", on);
+      node.toggleAttribute("data-unchecked", !on);
+    }
+  };
+  const build = (template, spec) => {
+    const [title, description] = (document.documentElement.lang || navigator.language || "")
+      .toLowerCase()
+      .startsWith("zh")
+      ? spec.zh
+      : spec.en;
+    const row = template.cloneNode(true);
+    for (const node of row.querySelectorAll("input")) node.remove();
+    for (const node of [row, ...row.querySelectorAll("[id], [for], [aria-labelledby], [aria-describedby]")]) {
+      for (const name of ["id", "for", "aria-labelledby", "aria-describedby"]) node.removeAttribute(name);
+    }
+    row.id = spec.id;
+    const heading = row.querySelector("h3");
+    if (heading) {
+      heading.textContent = title;
+      for (const slot of heading.parentElement.querySelectorAll(":scope > span")) slot.replaceChildren();
+    }
+    const text = row.querySelector("p");
+    if (text) text.textContent = description;
+    const control = row.querySelector('[role="switch"]');
+    control.setAttribute("aria-label", title);
+    const toggle = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const next = !state[spec.key];
+      state = { ...state, [spec.key]: next };
+      paint(row, next);
+      console.info(messagePrefix + JSON.stringify({ [spec.key]: next }));
+    };
+    control.addEventListener("click", toggle);
+    control.addEventListener("keydown", (event) => {
+      if (event.key === " " || event.key === "Enter") toggle(event);
+    });
+    paint(row, state[spec.key]);
+    return row;
+  };
+  const inject = () => {
+    if (document.getElementById(rows[0].id)) return;
+    const template = document.getElementById("terminal-close-confirmation");
+    if (!template || !template.querySelector('[role="switch"]')) return;
+    let after = document.getElementById("quit-confirmation") || template;
+    for (const spec of rows) {
+      const row = build(template, spec);
+      after.after(row);
+      after = row;
+    }
+  };
+  let scheduled = false;
+  new MutationObserver(() => {
+    if (scheduled || !location.pathname.startsWith("/settings")) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      inject();
+    });
+  }).observe(document.body, { childList: true, subtree: true });
+  window.__t3TrayPatch = {
+    setState(next) {
+      state = next;
+      for (const spec of rows) {
+        const row = document.getElementById(spec.id);
+        if (row) paint(row, state[spec.key]);
+      }
+    },
+  };
+  inject();
+}
+
+const TRAY_SNIPPET = `// [tray-patch v3] Close to tray and launch at login. https://github.com/zsy1207/t3code-tray-patch
 const __t3Tray = (() => {
 	if (process.platform !== "win32") return { shouldHide: () => false, attach: () => {}, deferFirstReveal: () => false };
 	const trayFs = require("node:fs");
@@ -53,6 +156,23 @@ const __t3Tray = (() => {
 		const state = electron.app.getLoginItemSettings(loginItem);
 		return state.executableWillLaunchAtLogin ?? state.openAtLogin;
 	};
+	const SETTINGS_PAGE = ${JSON.stringify(String(settingsPage))};
+	const SETTINGS_MESSAGE = "__t3_tray_patch__";
+	const currentState = () => ({ closeToTray: readSettings().closeToTray, launchAtLogin: launchesAtLogin() });
+	const runInPage = (window, code) => {
+		if (window === null || window.isDestroyed()) return;
+		window.webContents.executeJavaScript(code).catch(() => {});
+	};
+	const pushState = () => runInPage(mainWindow, "window.__t3TrayPatch && window.__t3TrayPatch.setState(" + JSON.stringify(currentState()) + ")");
+	const setCloseToTray = (value) => {
+		readSettings().closeToTray = value;
+		writeSettings();
+		pushState();
+	};
+	const setLaunchAtLogin = (value) => {
+		electron.app.setLoginItemSettings({ ...loginItem, openAtLogin: value });
+		pushState();
+	};
 	electron.app.on("before-quit", () => {
 		quitting = true;
 	});
@@ -77,18 +197,13 @@ const __t3Tray = (() => {
 			label: text("关闭窗口时最小化到托盘", "Close to tray"),
 			type: "checkbox",
 			checked: readSettings().closeToTray,
-			click: (item) => {
-				readSettings().closeToTray = item.checked;
-				writeSettings();
-			}
+			click: (item) => setCloseToTray(item.checked)
 		},
 		{
 			label: text("开机自启（启动后留在托盘）", "Launch at login (start in tray)"),
 			type: "checkbox",
 			checked: launchesAtLogin(),
-			click: (item) => {
-				electron.app.setLoginItemSettings({ ...loginItem, openAtLogin: item.checked });
-			}
+			click: (item) => setLaunchAtLogin(item.checked)
 		},
 		{ type: "separator" },
 		{ label: text(\`退出 \${displayName}\`, \`Quit \${displayName}\`), click: () => electron.app.quit() }
@@ -113,6 +228,18 @@ const __t3Tray = (() => {
 				if (!maximizeOnShow) return;
 				maximizeOnShow = false;
 				window.maximize();
+			});
+			window.webContents.on("dom-ready", () => {
+				runInPage(window, "(" + SETTINGS_PAGE + ")(" + JSON.stringify(currentState()) + "," + JSON.stringify(SETTINGS_MESSAGE) + ")");
+			});
+			window.webContents.on("console-message", (event, _level, legacyMessage) => {
+				const message = typeof legacyMessage === "string" ? legacyMessage : event && event.message;
+				if (typeof message !== "string" || !message.startsWith(SETTINGS_MESSAGE)) return;
+				try {
+					const change = JSON.parse(message.slice(SETTINGS_MESSAGE.length));
+					if (typeof change.closeToTray === "boolean") setCloseToTray(change.closeToTray);
+					if (typeof change.launchAtLogin === "boolean") setLaunchAtLogin(change.launchAtLogin);
+				} catch {}
 			});
 			if (tray !== null || typeof iconOption.icon !== "string") return;
 			try {
@@ -352,13 +479,13 @@ function run(args, log = console.log) {
   }
   log(
     patchedBefore
-      ? `T3 Code ${version} 的托盘补丁已升级到 v2。重新打开 T3 Code 即可生效。`
+      ? `T3 Code ${version} 的托盘补丁已升级到 v3。重新打开 T3 Code 即可生效。`
       : `T3 Code ${version} 已打上托盘补丁，原文件备份为 app.asar.bak。重新打开 T3 Code 即可生效。`,
   );
-  log("右键托盘图标可以开关「关闭窗口时最小化到托盘」和「开机自启」。");
+  log("两个开关在 设置 → 常规（「退出快捷键」下面），托盘图标的右键菜单里也有。");
   return 0;
 }
 
-module.exports = { TRAY_SNIPPET, patchSource, unpatchSource, readArchive, writeArchive, findEntry, readEntry, run };
+module.exports = { TRAY_SNIPPET, settingsPage, patchSource, unpatchSource, readArchive, writeArchive, findEntry, readEntry, run };
 
 if (require.main === module) process.exitCode = run(process.argv.slice(2));

@@ -131,7 +131,7 @@ function runTool(args) {
 
 test("patches all three places and reverses cleanly", () => {
   const patched = tool.patchSource(ORIGINAL_MAIN);
-  assert.ok(patched.includes("[tray-patch v2]"));
+  assert.ok(patched.includes("[tray-patch v3]"));
   assert.ok(patched.includes("if (__t3Tray.shouldHide(window)) {"));
   assert.ok(patched.includes("__t3Tray.attach(window, iconOption, environment.displayName);"));
   assert.ok(patched.includes("if (!__t3Tray.deferFirstReveal(persistedSettings.mainWindowMaximized)) {"));
@@ -150,7 +150,7 @@ test("applies to an install, keeps a backup, and leaves other files untouched", 
   const first = runTool([asarPath]);
   assert.equal(first.code, 0, first.output);
   assert.deepEqual(fs.readFileSync(`${asarPath}.bak`), before);
-  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v2]"));
+  assert.ok(readFile(asarPath, MAIN).includes("[tray-patch v3]"));
   assert.equal(readFile(asarPath, "zz-last.txt"), "after main\n");
   assert.equal(readFile(asarPath, "package.json"), readFile(`${asarPath}.bak`, "package.json"));
   const unpacked = tool.findEntry(tool.readArchive(asarPath).header, "apps/desktop/prod-resources/resource-monitor/monitor.exe");
@@ -166,7 +166,7 @@ test("upgrades an install patched by v1 without replacing the original backup", 
   fs.writeFileSync(`${asarPath}.bak`, "original");
   const result = runTool([asarPath]);
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /升级到 v2/);
+  assert.match(result.output, /升级到 v3/);
   assert.equal(readFile(asarPath, MAIN), tool.patchSource(ORIGINAL_MAIN));
   assert.equal(fs.readFileSync(`${asarPath}.bak`, "utf8"), "original");
 });
@@ -241,6 +241,12 @@ class FakeWindow extends EventEmitter {
     super();
     this.visible = false;
     this.maximized = false;
+    this.webContents = new EventEmitter();
+    this.webContents.scripts = [];
+    this.webContents.executeJavaScript = (code) => {
+      this.webContents.scripts.push(code);
+      return Promise.resolve();
+    };
   }
   isDestroyed() {
     return false;
@@ -332,4 +338,32 @@ test("tray: launch at login registers a hidden start that shows maximized later"
   atLogin.trays[0].emit("click");
   assert.equal(window.visible, true);
   assert.equal(window.maximized, true, "restores the saved maximized state");
+});
+
+test("settings page: injects on load and applies switch changes from the page", () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "tray-user-"));
+  const { tray, app, trays } = loadTray({ userData });
+  const window = new FakeWindow();
+  tray.attach(window, { icon: "C:/T3/icon.ico" }, "T3 Code");
+
+  window.webContents.emit("dom-ready");
+  const [injected] = window.webContents.scripts;
+  assert.ok(injected.startsWith("(function settingsPage("));
+  assert.ok(injected.endsWith(')({"closeToTray":true,"launchAtLogin":false},"__t3_tray_patch__")'));
+
+  const fromPage = (change) => ({ message: "__t3_tray_patch__" + JSON.stringify(change) });
+  window.webContents.emit("console-message", fromPage({ closeToTray: false }));
+  assert.equal(tray.shouldHide(window), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, "tray-patch.json"), "utf8")), {
+    closeToTray: false,
+  });
+  window.webContents.emit("console-message", {}, 1, "__t3_tray_patch__" + JSON.stringify({ launchAtLogin: true }));
+  assert.deepEqual(plain(app.loginItems), [{ args: ["--tray-patch-hidden"], openAtLogin: true }]);
+  window.webContents.emit("console-message", fromPage({ closeToTray: "yes" }));
+  window.webContents.emit("console-message", { message: "unrelated log line" });
+  assert.equal(tray.shouldHide(window), false, "ignores malformed and unrelated messages");
+
+  menuItem(trays[0], "关闭窗口时最小化到托盘").click({ checked: true });
+  assert.equal(tray.shouldHide(window), true);
+  assert.match(window.webContents.scripts.at(-1), /setState\(\{"closeToTray":true,/, "tray changes reach the page");
 });
